@@ -20,12 +20,14 @@ import (
 	"context"
 	"maps"
 
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
 	"github.com/milvus-io/milvus/internal/distributed/streaming"
 	"github.com/milvus-io/milvus/internal/metastore/model"
 	"github.com/milvus-io/milvus/internal/streamingcoord/server/broadcaster"
 	"github.com/milvus-io/milvus/internal/util/rlsutil"
 	"github.com/milvus-io/milvus/pkg/v3/proto/messagespb"
 	"github.com/milvus-io/milvus/pkg/v3/streaming/util/message"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/util/message/ce"
 	"github.com/milvus-io/milvus/pkg/v3/util/merr"
 )
 
@@ -52,7 +54,8 @@ func (c *Core) broadcastCreateRLSPolicy(ctx context.Context, req *rlsutil.Create
 			return err
 		}
 	}
-	return broadcastAlterRLSPolicy(ctx, broadcaster, policy)
+	return broadcastAlterRLSPolicy(ctx, broadcaster, policy, newRLSCacheExpirations(
+		req.GetDbName(), req.GetCollectionName(), policy.CollectionID, rlsutil.MsgTypeCreateRowPolicy))
 }
 
 func (c *Core) broadcastUpdateRLSPolicy(ctx context.Context, req *rlsutil.UpdateRowPolicyRequest) error {
@@ -66,14 +69,16 @@ func (c *Core) broadcastUpdateRLSPolicy(ctx context.Context, req *rlsutil.Update
 	if err != nil {
 		return err
 	}
-	return broadcastAlterRLSPolicy(ctx, broadcaster, policy)
+	return broadcastAlterRLSPolicy(ctx, broadcaster, policy, newRLSCacheExpirations(
+		req.GetDbName(), req.GetCollectionName(), policy.CollectionID, rlsutil.MsgTypeUpdateRowPolicy))
 }
 
-func broadcastAlterRLSPolicy(ctx context.Context, broadcaster broadcaster.BroadcastAPI, policy *model.RLSPolicy) error {
+func broadcastAlterRLSPolicy(ctx context.Context, broadcaster broadcaster.BroadcastAPI, policy *model.RLSPolicy, cacheExpirations *message.CacheExpirations) error {
 	msg := message.NewAlterRLSMetadataMessageBuilderV2().
 		WithHeader(&message.AlterRLSMetadataMessageHeader{
-			DbId:         policy.DBID,
-			CollectionId: policy.CollectionID,
+			DbId:             policy.DBID,
+			CollectionId:     policy.CollectionID,
+			CacheExpirations: cacheExpirations,
 		}).
 		WithBody(&message.AlterRLSMetadataMessageBody{
 			Metadata: &messagespb.AlterRLSMetadataMessageBody_Policy{
@@ -99,8 +104,9 @@ func (c *Core) broadcastDropRLSPolicy(ctx context.Context, req *rlsutil.DropRowP
 	}
 	msg := message.NewDropRLSMetadataMessageBuilderV2().
 		WithHeader(&message.DropRLSMetadataMessageHeader{
-			DbId:         policy.DBID,
-			CollectionId: policy.CollectionID,
+			DbId:             policy.DBID,
+			CollectionId:     policy.CollectionID,
+			CacheExpirations: newRLSCacheExpirations(req.GetDbName(), req.GetCollectionName(), policy.CollectionID, rlsutil.MsgTypeDropRowPolicy),
 		}).
 		WithBody(&message.DropRLSMetadataMessageBody{
 			Metadata: &messagespb.DropRLSMetadataMessageBody_PolicyName{
@@ -124,14 +130,16 @@ func (c *Core) broadcastSetRLSPrincipalTags(ctx context.Context, req *rlsutil.Se
 	if err != nil {
 		return err
 	}
-	return broadcastAlterRLSPrincipal(ctx, broadcaster, principal)
+	return broadcastAlterRLSPrincipal(ctx, broadcaster, principal, newRLSCacheExpirations(
+		req.GetDbName(), req.GetCollectionName(), principal.CollectionID, rlsutil.MsgTypeSetRLSPrincipalTags))
 }
 
-func broadcastAlterRLSPrincipal(ctx context.Context, broadcaster broadcaster.BroadcastAPI, principal *model.RLSPrincipal) error {
+func broadcastAlterRLSPrincipal(ctx context.Context, broadcaster broadcaster.BroadcastAPI, principal *model.RLSPrincipal, cacheExpirations *message.CacheExpirations) error {
 	msg := message.NewAlterRLSMetadataMessageBuilderV2().
 		WithHeader(&message.AlterRLSMetadataMessageHeader{
-			DbId:         principal.DBID,
-			CollectionId: principal.CollectionID,
+			DbId:             principal.DBID,
+			CollectionId:     principal.CollectionID,
+			CacheExpirations: cacheExpirations,
 		}).
 		WithBody(&message.AlterRLSMetadataMessageBody{
 			Metadata: &messagespb.AlterRLSMetadataMessageBody_Principal{
@@ -156,12 +164,14 @@ func (c *Core) broadcastDeleteRLSPrincipalTags(ctx context.Context, req *rlsutil
 		return err
 	}
 	if !drop {
-		return broadcastAlterRLSPrincipal(ctx, broadcaster, principal)
+		return broadcastAlterRLSPrincipal(ctx, broadcaster, principal, newRLSCacheExpirations(
+			req.GetDbName(), req.GetCollectionName(), principal.CollectionID, rlsutil.MsgTypeDeleteRLSPrincipalTags))
 	}
 	msg := message.NewDropRLSMetadataMessageBuilderV2().
 		WithHeader(&message.DropRLSMetadataMessageHeader{
-			DbId:         principal.DBID,
-			CollectionId: principal.CollectionID,
+			DbId:             principal.DBID,
+			CollectionId:     principal.CollectionID,
+			CacheExpirations: newRLSCacheExpirations(req.GetDbName(), req.GetCollectionName(), principal.CollectionID, rlsutil.MsgTypeDeleteRLSPrincipalTags),
 		}).
 		WithBody(&message.DropRLSMetadataMessageBody{
 			Metadata: &messagespb.DropRLSMetadataMessageBody_PrincipalName{
@@ -172,6 +182,15 @@ func (c *Core) broadcastDeleteRLSPrincipalTags(ctx context.Context, req *rlsutil
 		MustBuildBroadcast()
 	_, err = broadcaster.Broadcast(ctx, msg)
 	return err
+}
+
+func newRLSCacheExpirations(dbName string, collectionName string, collectionID int64, msgType commonpb.MsgType) *message.CacheExpirations {
+	return ce.NewBuilder().WithLegacyProxyCollectionMetaCache(
+		ce.OptLPCMDBName(dbName),
+		ce.OptLPCMCollectionName(collectionName),
+		ce.OptLPCMCollectionID(collectionID),
+		ce.OptLPCMMsgType(msgType),
+	).Build()
 }
 
 func marshalRLSPolicyMessage(policy *model.RLSPolicy) *messagespb.RLSPolicyMetadata {
@@ -235,31 +254,41 @@ func unmarshalRLSPrincipalMessage(header *message.AlterRLSMetadataMessageHeader,
 func (c *DDLCallback) alterRLSMetadataV2AckCallback(ctx context.Context, result message.BroadcastResultAlterRLSMetadataMessageV2) error {
 	msg := result.Message
 	header := msg.Header()
+	var err error
 	switch metadata := msg.MustBody().GetMetadata().(type) {
 	case *messagespb.AlterRLSMetadataMessageBody_Policy:
 		if metadata.Policy == nil {
 			return merr.WrapErrServiceInternalMsg("alter RLS metadata message has nil policy")
 		}
-		return c.meta.ApplyAlterRLSPolicy(ctx, unmarshalRLSPolicyMessage(header, metadata.Policy))
+		err = c.meta.ApplyAlterRLSPolicy(ctx, unmarshalRLSPolicyMessage(header, metadata.Policy))
 	case *messagespb.AlterRLSMetadataMessageBody_Principal:
 		if metadata.Principal == nil {
 			return merr.WrapErrServiceInternalMsg("alter RLS metadata message has nil principal")
 		}
-		return c.meta.ApplyAlterRLSPrincipal(ctx, unmarshalRLSPrincipalMessage(header, metadata.Principal))
+		err = c.meta.ApplyAlterRLSPrincipal(ctx, unmarshalRLSPrincipalMessage(header, metadata.Principal))
 	default:
 		return merr.WrapErrServiceInternalMsg("alter RLS metadata message has no metadata")
 	}
+	if err != nil {
+		return err
+	}
+	return c.ExpireCaches(ctx, header)
 }
 
 func (c *DDLCallback) dropRLSMetadataV2AckCallback(ctx context.Context, result message.BroadcastResultDropRLSMetadataMessageV2) error {
 	msg := result.Message
 	header := msg.Header()
+	var err error
 	switch metadata := msg.MustBody().GetMetadata().(type) {
 	case *messagespb.DropRLSMetadataMessageBody_PolicyName:
-		return c.meta.ApplyDropRLSPolicy(ctx, header.GetCollectionId(), metadata.PolicyName)
+		err = c.meta.ApplyDropRLSPolicy(ctx, header.GetCollectionId(), metadata.PolicyName)
 	case *messagespb.DropRLSMetadataMessageBody_PrincipalName:
-		return c.meta.ApplyDropRLSPrincipal(ctx, header.GetCollectionId(), metadata.PrincipalName)
+		err = c.meta.ApplyDropRLSPrincipal(ctx, header.GetCollectionId(), metadata.PrincipalName)
 	default:
 		return merr.WrapErrServiceInternalMsg("drop RLS metadata message has no metadata")
 	}
+	if err != nil {
+		return err
+	}
+	return c.ExpireCaches(ctx, header)
 }
