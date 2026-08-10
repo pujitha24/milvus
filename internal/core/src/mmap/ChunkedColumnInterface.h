@@ -15,19 +15,42 @@
 // limitations under the License.
 #pragma once
 
+#include <algorithm>
 #include <atomic>
+#include <functional>
+#include <memory>
 #include <mutex>
+#include <optional>
+#include <vector>
 
 #include "cachinglayer/CacheSlot.h"
 #include "common/Chunk.h"
+#include "common/EasyAssert.h"
 #include "common/OffsetMapping.h"
 #include "common/bson_view.h"
+#include "mmap/ChunkedColumnScanCommon.h"
 namespace milvus {
 
 using namespace milvus::cachinglayer;
 
 class ChunkedColumnInterface {
  public:
+    using ScanValueKind = milvus::ScanValueKind;
+    using ValueEncoding = milvus::ValueEncoding;
+    using ValueView = milvus::ValueView;
+    using ScanBatch = milvus::ScanBatch;
+    using ScanReadMode = milvus::ScanReadMode;
+    using ScanCursor = milvus::ScanCursor;
+    using ScanPinPolicy = milvus::ScanPinPolicy;
+    using ScanOptions = milvus::ScanOptions;
+    using ScanResult = milvus::ScanResult;
+    using OffsetView = milvus::OffsetView;
+    using OwnedTakeData = milvus::OwnedTakeData;
+    using TakeOptions = milvus::TakeOptions;
+    using TakeResult = milvus::TakeResult;
+    using TakeResultPtr = milvus::TakeResultPtr;
+    using TakeCellPin = std::function<PinWrapper<Chunk*>(int64_t)>;
+
     virtual ~ChunkedColumnInterface() = default;
 
     // Check if this column is part of a multi-field column group.
@@ -140,6 +163,20 @@ class ChunkedColumnInterface {
     virtual PinWrapper<Chunk*>
     GetChunk(milvus::OpContext* op_ctx, int64_t chunk_id) const = 0;
 
+    // Pin all raw chunks required by one scan plan before constructing its
+    // cursor. Implementations backed by one cache slot should override this
+    // method so the requested cells are pinned by a single PinCells call.
+    virtual std::vector<PinWrapper<Chunk*>>
+    PinChunks(milvus::OpContext* op_ctx,
+              const std::vector<int64_t>& chunk_ids) const {
+        std::vector<PinWrapper<Chunk*>> chunks;
+        chunks.reserve(chunk_ids.size());
+        for (auto chunk_id : chunk_ids) {
+            chunks.emplace_back(GetChunk(op_ctx, chunk_id));
+        }
+        return chunks;
+    }
+
     virtual std::vector<PinWrapper<Chunk*>>
     GetAllChunks(milvus::OpContext* op_ctx) const = 0;
 
@@ -177,6 +214,26 @@ class ChunkedColumnInterface {
                 valid_result[i] = false;
             }
         }
+    }
+
+    virtual ScanResult
+    Scan(milvus::OpContext* op_ctx, const ScanOptions& options) const;
+
+    // Positional access. The returned logical values must follow the input
+    // offset order exactly and preserve duplicates. Backends are free to sort,
+    // group, deduplicate, pin, or materialize internally as long as those
+    // details do not change Get(i) semantics.
+    virtual TakeResultPtr
+    Take(milvus::OpContext* op_ctx, const TakeOptions& options) const;
+
+    // Return a generation-stable accessor used by the default Raw Take
+    // implementation to pin one Cell at a time after Take() returns. The
+    // accessor must own the cache resources it needs; it must not capture a
+    // bare column pointer. The caller keeps op_ctx alive until borrowed access
+    // and any GetOwn() materialization are complete.
+    virtual TakeCellPin
+    MakeTakeCellPin(milvus::OpContext* op_ctx) const {
+        return {};
     }
 
     // Get number of rows before a specific chunk
@@ -372,6 +429,11 @@ class ChunkedColumnInterface {
     }
 
  protected:
+    virtual std::optional<DataType>
+    GetDefaultScanDataType() const {
+        return std::nullopt;
+    }
+
     FixedVector<bool> valid_data_;
     std::vector<int64_t> valid_count_per_chunk_;
     std::vector<int64_t> num_valid_rows_until_chunk_;

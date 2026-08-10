@@ -175,6 +175,39 @@ TEST_F(VirtualPKChunkedColumnTest, BulkPrimitiveValueAt) {
     }
 }
 
+TEST_F(VirtualPKChunkedColumnTest,
+       Int64VirtualPrimaryKeyUsesFixedWidthScanCursor) {
+    constexpr int64_t segment_id = 200;
+    constexpr int64_t num_rows = 5;
+    VirtualPKChunkedColumn column(segment_id, num_rows);
+
+    auto cursor = column.Scan(
+        nullptr, ChunkedColumnInterface::ScanOptions::ForData(1));
+    ASSERT_NE(cursor, nullptr);
+
+    ChunkedColumnInterface::ScanBatch batch;
+    ASSERT_TRUE(cursor->Next(
+        1,
+        num_rows - 1,
+        ChunkedColumnInterface::ScanReadMode::DataAndValidity,
+        &batch));
+    EXPECT_EQ(batch.row_id_start, 1);
+    EXPECT_EQ(batch.size, num_rows - 1);
+    EXPECT_EQ(batch.values.encoding,
+              ChunkedColumnInterface::ValueEncoding::FixedWidth);
+    EXPECT_EQ(batch.values.kind,
+              ChunkedColumnInterface::ScanValueKind::FixedWidth);
+    const auto* values = batch.values.data_as<int64_t>();
+    for (int64_t i = 0; i < batch.size; ++i) {
+        EXPECT_EQ(values[i], GetVirtualPK(segment_id, i + 1));
+    }
+    EXPECT_FALSE(cursor->Next(
+        num_rows,
+        0,
+        ChunkedColumnInterface::ScanReadMode::DataAndValidity,
+        &batch));
+}
+
 TEST_F(VirtualPKChunkedColumnTest, BulkValueAt) {
     int64_t segment_id = 300;
     int64_t num_rows = 50;
@@ -307,15 +340,40 @@ TEST_F(VirtualPKChunkedColumnTest, SupportedOperations) {
 
     VirtualPKChunkedColumn column(segment_id, num_rows);
 
-    // DataOfChunk and Span are supported via EnsureMaterialized
+    // Chunk-backed access is supported via EnsureMaterialized so the common
+    // scan path can pin its input before constructing the cursor.
     EXPECT_NO_THROW(column.DataOfChunk(nullptr, 0));
     EXPECT_NO_THROW(column.Span(nullptr, 0));
+    EXPECT_NO_THROW(column.GetChunk(nullptr, 0));
+    EXPECT_NO_THROW(column.GetAllChunks(nullptr));
 
     // Verify DataOfChunk returns valid data
     auto data = column.DataOfChunk(nullptr, 0);
     auto pks = reinterpret_cast<const int64_t*>(data.get());
     ASSERT_NE(pks, nullptr);
     ASSERT_EQ(pks[0], GetVirtualPK(GetTruncatedSegmentID(segment_id), 0));
+
+    auto chunks = column.GetAllChunks(nullptr);
+    ASSERT_EQ(chunks.size(), 1);
+    ASSERT_EQ(chunks[0].get()->RowNums(), num_rows);
+}
+
+TEST_F(VirtualPKChunkedColumnTest,
+       MaterializedChunkKeepsVirtualPkBufferAlive) {
+    constexpr int64_t segment_id = 100;
+    constexpr int64_t num_rows = 50;
+    auto pinned_chunk = [=]() {
+        auto column =
+            std::make_shared<VirtualPKChunkedColumn>(segment_id, num_rows);
+        return column->GetChunk(nullptr, 0);
+    }();
+
+    ASSERT_NE(pinned_chunk.get(), nullptr);
+    for (int64_t i = 0; i < num_rows; ++i) {
+        EXPECT_EQ(*reinterpret_cast<const int64_t*>(
+                      pinned_chunk.get()->ValueAt(i)),
+                  GetVirtualPK(segment_id, i));
+    }
 }
 
 TEST_F(VirtualPKChunkedColumnTest, UnsupportedOperations) {
@@ -324,9 +382,6 @@ TEST_F(VirtualPKChunkedColumnTest, UnsupportedOperations) {
 
     VirtualPKChunkedColumn column(segment_id, num_rows);
 
-    // These operations should throw
-    EXPECT_THROW(column.GetChunk(nullptr, 0), std::exception);
-    EXPECT_THROW(column.GetAllChunks(nullptr), std::exception);
     EXPECT_THROW(column.StringViews(nullptr, 0, std::nullopt), std::exception);
     EXPECT_THROW(column.ArrayViews(nullptr, 0, std::nullopt), std::exception);
 }
