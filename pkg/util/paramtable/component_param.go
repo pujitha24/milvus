@@ -3741,6 +3741,8 @@ type queryNodeConfig struct {
 	// are packed into cells so rgs_per_cell * avg_rg_size ≈ this value.
 	StorageV2CellTargetSizeBytes ParamItem `refreshable:"true"`
 
+	EnableVortexScanPushdown ParamItem `refreshable:"true"`
+
 	EnableWorkerSQCostMetrics ParamItem `refreshable:"true"`
 
 	ExprEvalBatchSize ParamItem `refreshable:"false"`
@@ -4984,6 +4986,15 @@ user-task-polling:
 		},
 	}
 	p.StorageV2CellTargetSizeBytes.Init(base.mgr)
+
+	p.EnableVortexScanPushdown = ParamItem{
+		Key:          "queryNode.segcore.enableVortexScanPushdown",
+		Version:      "3.0.0",
+		DefaultValue: "true",
+		Doc:          "Enable Vortex local-format varchar filter pushdown through row-id scan.",
+		Export:       true,
+	}
+	p.EnableVortexScanPushdown.Init(base.mgr)
 
 	p.EnableWorkerSQCostMetrics = ParamItem{
 		Key:          "queryNode.enableWorkerSQCostMetrics",
