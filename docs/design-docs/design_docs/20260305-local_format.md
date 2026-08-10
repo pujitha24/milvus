@@ -110,8 +110,11 @@ true:
 - all fields in the physical column group have `local_format=vortex`;
 - the Storage V3 manifest says the physical column group file is Vortex.
 
-If either condition is false, the segment uses the existing raw loading path for
-that column group.
+If the group mixes Vortex with default or explicit raw local-format fields, the
+segment falls back to the group default local format. The default is currently
+the existing raw row layout; a future server-level default may change this
+resolution. A group containing the primary-key field is the exception: it must
+always fall back to the raw row layout, regardless of the configured default.
 
 ## Design Details
 
@@ -289,7 +292,9 @@ The interface covers two operation groups:
 - scan operations for expression evaluation;
 - positional take/output operations for retrieve, requery, and bulk_subscript.
 
-`Scan` returns a cursor of `ScanBatch` values.
+`Scan` returns a persistent cursor of `ScanBatch` values for one expression
+leaf. The cursor receives each requested absolute row range through `Next` and
+pins only the resources needed to produce the returned batch.
 
 Scan outputs:
 
@@ -366,6 +371,12 @@ Responsibilities:
   internal fields use the field id string.
 - Build a field-level projected Arrow schema.
 - Create field-level planner/reader state.
+- Validate every file's Arrow field type against the Milvus `FieldMeta` before
+  publishing the column. Direct scans use checked Arrow casts; physical
+  representations that require the existing normalization path fall back to
+  materialized raw-compatible scans instead of being reinterpreted in place.
+- Reject actual NULL rows returned for a non-nullable Milvus field across scan
+  and take paths as `DataFormatBroken`.
 - Implement `Scan`.
 - Implement positional take helpers for retrieve output.
 
@@ -461,10 +472,10 @@ next access that switches Cells, `GetOwn()`, or result destruction. `GetOwn()`
 groups positions by Cell, pins each Cell once while copying into the ordered
 owned result, and then releases the borrowed pin.
 
-Reader-backed implementations such as Vortex may sort, group, and deduplicate
-offsets internally to reduce reader work, then restore the original input order
-in an already-owned decoded result. These physical details do not cross the
-`TakeResult` boundary.
+Vortex sorts, groups, and deduplicates offsets by file to reduce reader work.
+Each file's planned Cells stay pinned only through reader decode and Arrow
+import; the pin is released before processing the next file. Vortex restores
+the original input order in its already-owned decoded result.
 
 ### Retrieve and Requery
 
@@ -568,6 +579,8 @@ System and integration validation:
 - Verify `local_format=vortex` is rejected for primary-key and vector fields.
 - Verify Storage V3 manifests with Vortex physical column groups load as
   `VortexColumnGroup + VortexColumn`.
+- Verify mixed local-format groups fall back to the default local format and
+  groups containing the primary key always fall back to the raw row layout.
 - Verify non-Vortex physical files continue to load through the raw path.
 - Run scalar filter benchmark cases for primitive predicates, complex
   expressions, offset-input execution, and retrieve/requery output.
@@ -594,7 +607,8 @@ Performance validation:
 
 ## Future Work
 
-- Push offset bitmaps or row selections into `ChunkedColumnInterface::Scan`.
+- Add a specialized monotonic-offset Vortex Take path if benchmarks show that a
+  true streaming reader materially improves ordered requests.
 - Expand Vortex predicate construction for more scalar types and expression
   forms.
 - Optimize long string, JSON, and ARRAY retrieve/take conversion paths.

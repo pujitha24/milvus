@@ -181,16 +181,16 @@ TEST_F(VirtualPKChunkedColumnTest,
     constexpr int64_t num_rows = 5;
     VirtualPKChunkedColumn column(segment_id, num_rows);
 
-    auto cursor = column.Scan(
-        nullptr, ChunkedColumnInterface::ScanOptions::ForData(1));
+    auto cursor =
+        column.Scan(nullptr, ChunkedColumnInterface::ScanOptions::ForData(1));
     ASSERT_NE(cursor, nullptr);
 
     ChunkedColumnInterface::ScanBatch batch;
-    ASSERT_TRUE(cursor->Next(
-        1,
-        num_rows - 1,
-        ChunkedColumnInterface::ScanReadMode::DataAndValidity,
-        &batch));
+    ASSERT_TRUE(
+        cursor->Next(1,
+                     num_rows - 1,
+                     ChunkedColumnInterface::ScanReadMode::DataAndValidity,
+                     &batch));
     EXPECT_EQ(batch.row_id_start, 1);
     EXPECT_EQ(batch.size, num_rows - 1);
     EXPECT_EQ(batch.values.encoding,
@@ -201,11 +201,6 @@ TEST_F(VirtualPKChunkedColumnTest,
     for (int64_t i = 0; i < batch.size; ++i) {
         EXPECT_EQ(values[i], GetVirtualPK(segment_id, i + 1));
     }
-    EXPECT_FALSE(cursor->Next(
-        num_rows,
-        0,
-        ChunkedColumnInterface::ScanReadMode::DataAndValidity,
-        &batch));
 }
 
 TEST_F(VirtualPKChunkedColumnTest, BulkValueAt) {

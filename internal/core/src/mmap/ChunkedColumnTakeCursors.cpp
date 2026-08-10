@@ -80,12 +80,12 @@ class RawTakeResult final : public ChunkedColumnInterface::TakeResult {
         locations_.reserve(offsets.size);
         for (int64_t i = 0; i < offsets.size; ++i) {
             const auto segment_offset = offsets[i];
-            AssertInfo(segment_offset >= 0 &&
-                           static_cast<size_t>(segment_offset) <
-                               column->NumRows(),
-                       "take offset {} is out of range, num_rows: {}",
-                       segment_offset,
-                       column->NumRows());
+            AssertInfo(
+                segment_offset >= 0 &&
+                    static_cast<size_t>(segment_offset) < column->NumRows(),
+                "take offset {} is out of range, num_rows: {}",
+                segment_offset,
+                column->NumRows());
             auto [chunk_id, chunk_offset] =
                 column->GetChunkIDByOffset(segment_offset);
             const auto cell_id = static_cast<int64_t>(chunk_id);
